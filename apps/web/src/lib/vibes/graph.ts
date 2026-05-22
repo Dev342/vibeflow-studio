@@ -1,4 +1,3 @@
-import { MarkerType } from "@xyflow/react";
 import { VibeDocument, VibeGraph, VibeIssue, VibeStep } from "./types";
 
 function classify(step: VibeStep): string {
@@ -134,7 +133,7 @@ export function buildVibeGraph(doc: VibeDocument, issues: VibeIssue[]): VibeGrap
           label: target.label,
           type: "smoothstep",
           animated: target.label === "then",
-          markerEnd: { type: MarkerType.ArrowClosed },
+          markerEnd: { type: "arrowclosed" },
         });
       }
     }
@@ -152,7 +151,7 @@ export function buildVibeGraph(doc: VibeDocument, issues: VibeIssue[]): VibeGrap
       source: step.id,
       target: next.id,
       type: "smoothstep",
-      markerEnd: { type: MarkerType.ArrowClosed },
+      markerEnd: { type: "arrowclosed" },
     });
   }
 
