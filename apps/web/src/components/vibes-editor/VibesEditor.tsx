@@ -34,10 +34,11 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import { parseVibeYaml, stringifyVibeYaml } from "@/lib/vibes/parse";
+import { parseVibeYaml } from "@/lib/vibes/parse";
 import { validateVibe } from "@/lib/vibes/validate";
 import { buildVibeGraph } from "@/lib/vibes/graph";
 import { VibeNode } from "./VibeNode";
+import type { VibeIssue } from "@/lib/vibes/types";
 
 const nodeTypes = {
   ai: VibeNode,
@@ -96,8 +97,8 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const [dirty, setDirty] = useState(false);
   const [flowInstance, setFlowInstance] = useState<any>(null);
 
-  const [leftWidth, setLeftWidth] = useState(360);
-  const [rightWidth, setRightWidth] = useState(520);
+  const [leftWidth, setLeftWidth] = useState(330);
+  const [rightWidth, setRightWidth] = useState(500);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
 
@@ -108,12 +109,13 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     {
       role: "assistant",
       text:
-        "Ask me to explain this Vibe, fix validation errors, add a confirmation step, add an API call, or improve the workflow. I will return changes you can apply.",
+        "I can explain this StudioX Vibe, fix validation issues, add steps, rewrite branches, or improve the workflow. I only change YAML after you apply the proposed update.",
     },
   ]);
 
   const dragState = useRef<null | "left" | "right">(null);
   const yamlEditorRef = useRef<any>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   const parsed = useMemo(() => parseVibeYaml(yaml), [yaml]);
 
@@ -136,16 +138,21 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   }, [graph, setEdges, setNodes]);
 
   useEffect(() => {
+    if (!copilotOpen) return;
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [chatMessages, aiLoading, copilotOpen]);
+
+  useEffect(() => {
     function onMouseMove(event: MouseEvent) {
       if (!dragState.current) return;
 
       if (dragState.current === "left") {
-        const next = Math.min(Math.max(event.clientX, 280), 520);
+        const next = Math.min(Math.max(event.clientX, 260), 480);
         setLeftWidth(next);
       }
 
       if (dragState.current === "right") {
-        const next = Math.min(Math.max(window.innerWidth - event.clientX, 420), 760);
+        const next = Math.min(Math.max(window.innerWidth - event.clientX, 410), 720);
         setRightWidth(next);
       }
     }
@@ -210,12 +217,16 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   function jumpToYamlLine(lineNumber?: number | null, column = 1) {
     if (!lineNumber || !yamlEditorRef.current) return;
 
-    yamlEditorRef.current.revealLineInCenter(lineNumber);
-    yamlEditorRef.current.setPosition({
-      lineNumber,
-      column,
-    });
-    yamlEditorRef.current.focus();
+    if (!rightOpen) setRightOpen(true);
+
+    window.setTimeout(() => {
+      yamlEditorRef.current?.revealLineInCenter(lineNumber);
+      yamlEditorRef.current?.setPosition({
+        lineNumber,
+        column,
+      });
+      yamlEditorRef.current?.focus();
+    }, 120);
   }
 
   function focusStep(stepId?: string) {
@@ -232,6 +243,12 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     }
   }
 
+  function jumpToStep(stepId?: string) {
+    if (!stepId) return;
+    focusStep(stepId);
+    jumpToYamlLine(findStepLineNumber(stepId), 1);
+  }
+
   function jumpToIssue(issue: {
     lineNumber?: number;
     column?: number;
@@ -243,29 +260,24 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     }
 
     if (issue.stepId) {
-      focusStep(issue.stepId);
-      jumpToYamlLine(findStepLineNumber(issue.stepId), 1);
+      jumpToStep(issue.stepId);
     }
   }
 
   async function saveSession() {
-    if (!sessionId) {
-      setStatusMessage("This demo page is not a saved session. Open a /editor/session link to save.");
-      setSaveState("error");
-      return;
-    }
-
     setSaveState("saving");
-    setStatusMessage("Saving session...");
+    setStatusMessage(sessionId ? "Saving session..." : "Creating saved session...");
 
     try {
-      const res = await fetch(`/api/sessions/${sessionId}`, {
-        method: "PATCH",
+      const title = parsed.doc?.workflow.name ?? sessionTitle ?? "StudioX Vibe";
+
+      const res = await fetch(sessionId ? `/api/sessions/${sessionId}` : "/api/sessions", {
+        method: sessionId ? "PATCH" : "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          title: parsed.doc?.workflow.name ?? sessionTitle ?? "StudioX Vibe",
+          title,
           yaml,
         }),
       });
@@ -283,6 +295,13 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
           ? "Saved. Workflow is valid."
           : `Saved with ${data.issueCount ?? 0} validation issue(s).`
       );
+
+      if (!sessionId && data.url) {
+        window.setTimeout(() => {
+          window.location.href = data.url;
+        }, 700);
+        return;
+      }
 
       window.setTimeout(() => {
         setSaveState("idle");
@@ -317,11 +336,12 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     setStatusMessage(`Downloaded ${filename}.`);
   }
 
-  async function askCopilot() {
-    const prompt = aiPrompt.trim();
+  async function askCopilot(promptOverride?: string) {
+    const prompt = (promptOverride ?? aiPrompt).trim();
 
     if (!prompt || aiLoading) return;
 
+    setCopilotOpen(true);
     setChatMessages((prev) => [...prev, { role: "user", text: prompt }]);
     setAiPrompt("");
     setAiLoading(true);
@@ -372,6 +392,22 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     }
   }
 
+  function fixIssueWithAi(issue: VibeIssue) {
+    jumpToIssue(issue);
+
+    const location = issue.lineNumber
+      ? `line ${issue.lineNumber}`
+      : issue.stepId
+        ? `step "${issue.stepId}"`
+        : "the workflow";
+
+    askCopilot(
+      `Fix this StudioX Vibe validation issue at ${location}: ${issue.message}
+
+Return the full updated YAML. Keep the workflow behavior as close as possible to the original.`
+    );
+  }
+
   function applyAiYaml(nextYaml: string) {
     setYamlDirty(nextYaml);
     setStatusMessage("AI changes applied. Review the graph and click Save.");
@@ -385,6 +421,29 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
       className="grid h-screen overflow-hidden bg-slate-950 text-white"
       style={{ gridTemplateColumns }}
     >
+      <style jsx global>{`
+        .react-flow__controls {
+          box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35) !important;
+          overflow: hidden !important;
+        }
+
+        .react-flow__controls-button {
+          background: rgba(15, 23, 42, 0.92) !important;
+          border-bottom: 1px solid rgba(148, 163, 184, 0.22) !important;
+          color: #e2e8f0 !important;
+          fill: #e2e8f0 !important;
+        }
+
+        .react-flow__controls-button:hover {
+          background: rgba(30, 41, 59, 0.98) !important;
+        }
+
+        .react-flow__controls-button svg {
+          fill: #e2e8f0 !important;
+          color: #e2e8f0 !important;
+        }
+      `}</style>
+
       <aside
         className={`relative overflow-hidden border-r border-white/10 bg-slate-950 transition-opacity ${
           leftOpen ? "opacity-100" : "pointer-events-none opacity-0"
@@ -432,13 +491,14 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
               </div>
             </div>
 
-            <div className="mt-3 max-h-[40vh] space-y-2 overflow-auto pr-1">
+            <div className="mt-3 max-h-[43vh] space-y-2 overflow-auto pr-1">
               {parsed.error && (
                 <IssueCard
                   severity="error"
                   message={parsed.error}
                   lineNumber={parseIssue?.lineNumber}
                   onClick={() => jumpToIssue(parseIssue ?? {})}
+                  onAiFix={parseIssue ? () => fixIssueWithAi(parseIssue) : undefined}
                 />
               )}
 
@@ -459,16 +519,17 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
                   stepId={issue.stepId}
                   lineNumber={issue.lineNumber}
                   onClick={() => jumpToIssue(issue)}
+                  onAiFix={() => fixIssueWithAi(issue)}
                 />
               ))}
             </div>
           </div>
 
           <div className="mt-auto rounded-3xl border border-white/10 bg-white/[0.05] p-4 text-xs text-slate-400">
-            <div className="font-semibold text-slate-200">Demo hint</div>
+            <div className="font-semibold text-slate-200">StudioX-specific checks</div>
             <div className="mt-2 leading-5">
-              Ask Copilot: <span className="text-slate-200">“Fix the validation errors”</span> or{" "}
-              <span className="text-slate-200">“Add a manager approval step.”</span>
+              Validates StudioX functions, branches, variable refs, promptUser, apiRequest, and MCP
+              tool calls — not just YAML syntax.
             </div>
           </div>
         </div>
@@ -505,52 +566,49 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
             </div>
 
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <ToolbarButton onClick={() => setCopilotOpen(true)}>
+              <button
+                onClick={() => setCopilotOpen(true)}
+                className="inline-flex items-center gap-2 rounded-2xl bg-cyan-300 px-3 py-2 text-sm font-bold text-slate-950 shadow-lg transition hover:scale-[1.02]"
+              >
                 <Bot size={15} />
-                AI Copilot
-              </ToolbarButton>
+                AI
+              </button>
 
               <ToolbarButton onClick={() => setLeftOpen((value) => !value)}>
                 {leftOpen ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
-                Left
               </ToolbarButton>
 
               <ToolbarButton onClick={() => setRightOpen((value) => !value)}>
                 {rightOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
-                Right
               </ToolbarButton>
 
               <ToolbarButton onClick={() => flowInstance?.fitView({ duration: 450 })}>
                 <Maximize2 size={15} />
-                Fit
               </ToolbarButton>
 
               <ToolbarButton onClick={() => setYamlDirty(initialYaml)}>
                 <RefreshCcw size={15} />
-                Reset
               </ToolbarButton>
 
               <ToolbarButton onClick={copyYaml}>
                 <Clipboard size={15} />
-                Copy
               </ToolbarButton>
 
               <ToolbarButton onClick={downloadYaml}>
                 <Download size={15} />
-                Download
               </ToolbarButton>
 
               <button
                 onClick={saveSession}
-                disabled={saveState === "saving" || !sessionId || !dirty}
-                className="inline-flex items-center gap-2 rounded-2xl bg-cyan-300 px-4 py-2 text-sm font-bold text-slate-950 shadow-xl transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={saveState === "saving" || !dirty}
+                className="inline-flex items-center gap-2 rounded-2xl bg-white px-3 py-2 text-sm font-bold text-slate-950 shadow-xl transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {saveState === "saving" ? (
                   <Loader2 size={15} className="animate-spin" />
                 ) : (
                   <Save size={15} />
                 )}
-                Save
+                {sessionId ? "Save" : "Save session"}
               </button>
             </div>
           </div>
@@ -564,7 +622,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
           nodeTypes={nodeTypes}
           fitView
           onInit={setFlowInstance}
-          onNodeClick={(_, node: any) => setSelectedStepId(node.id)}
+          onNodeClick={(_, node: any) => jumpToStep(node.id)}
           proOptions={{ hideAttribution: true }}
           className="relative z-0"
         >
@@ -589,7 +647,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
                 </div>
                 <div>
                   <div className="text-sm font-black">VibeFlow Copilot</div>
-                  <div className="text-xs text-slate-500">Explain, fix, and modify this YAML</div>
+                  <div className="text-xs text-slate-500">StudioX YAML assistant</div>
                 </div>
               </div>
 
@@ -621,8 +679,10 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
                           : "border-amber-400/20 bg-amber-400/10 text-amber-100"
                       }`}
                     >
-                      Proposed YAML validation:{" "}
-                      {message.validation.valid ? "valid" : `${message.validation.issueCount} issue(s)`}
+                      Proposed YAML:{" "}
+                      {message.validation.valid
+                        ? "valid"
+                        : `${message.validation.issueCount} issue(s)`}
                     </div>
                   )}
 
@@ -632,7 +692,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
                       className="mt-3 inline-flex items-center gap-2 rounded-xl bg-cyan-300 px-3 py-2 text-xs font-bold text-slate-950"
                     >
                       <Wand2 size={13} />
-                      Apply AI changes
+                      Apply changes
                     </button>
                   )}
                 </div>
@@ -646,6 +706,8 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
                   </div>
                 </div>
               )}
+
+              <div ref={chatEndRef} />
             </div>
 
             <div className="border-t border-white/10 p-4">
@@ -658,17 +720,17 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
                     askCopilot();
                   }
                 }}
-                placeholder="Ask: explain this Vibe, fix validation errors, add approval branch..."
+                placeholder="Ask: explain this, fix validation errors, add manager approval..."
                 className="h-24 w-full resize-none rounded-2xl border border-white/10 bg-slate-900 p-3 text-sm text-white outline-none placeholder:text-slate-500"
               />
 
               <button
-                onClick={askCopilot}
+                onClick={() => askCopilot()}
                 disabled={aiLoading || !aiPrompt.trim()}
                 className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-bold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {aiLoading ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                Send to Copilot
+                Send
               </button>
             </div>
           </div>
@@ -676,7 +738,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
       </main>
 
       <aside
-        className={`grid grid-rows-[340px_1fr] overflow-hidden border-l border-white/10 bg-slate-950 transition-opacity ${
+        className={`grid grid-rows-[300px_1fr] overflow-hidden border-l border-white/10 bg-slate-950 transition-opacity ${
           rightOpen ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
@@ -698,10 +760,17 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
 
           {!selectedStep ? (
             <div className="mt-6 rounded-3xl border border-slate-800 bg-slate-900/70 p-5 text-sm leading-6 text-slate-400">
-              Select a node to inspect it. Edit the source YAML below for stable editing.
+              Click a node to inspect it and jump to its YAML.
             </div>
           ) : (
-            <div className="mt-4 h-[250px] overflow-auto rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+            <div className="mt-4 h-[215px] overflow-auto rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+              <button
+                onClick={() => jumpToStep(selectedStep.id)}
+                className="mb-3 rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100"
+              >
+                Jump to YAML
+              </button>
+
               <div className="font-mono text-sm font-semibold text-slate-100">{selectedStep.id}</div>
               <div className="mt-1 font-mono text-xs text-slate-500">
                 function: {selectedStep.function}
@@ -718,9 +787,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
           <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
             <div>
               <div className="text-sm font-black">YAML Source</div>
-              <div className="mt-1 text-xs text-slate-500">
-                Source of truth. Edits update the graph live.
-              </div>
+              <div className="mt-1 text-xs text-slate-500">Source of truth.</div>
             </div>
 
             <div
@@ -818,12 +885,14 @@ function IssueCard({
   stepId,
   lineNumber,
   onClick,
+  onAiFix,
 }: {
   severity: string;
   message: string;
   stepId?: string;
   lineNumber?: number;
   onClick: () => void;
+  onAiFix?: () => void;
 }) {
   const isError = severity === "error";
 
@@ -843,7 +912,21 @@ function IssueCard({
           {lineNumber ? `line ${lineNumber}` : stepId}
         </span>
       </div>
+
       <div className="leading-5 opacity-90">{message}</div>
+
+      {onAiFix && (
+        <span
+          onClick={(event) => {
+            event.stopPropagation();
+            onAiFix();
+          }}
+          className="mt-3 inline-flex items-center gap-1 rounded-xl bg-white/10 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-white/15"
+        >
+          <Wand2 size={12} />
+          AI fix
+        </span>
+      )}
     </button>
   );
 }

@@ -132,14 +132,26 @@ export function parseVibeYaml(source: string): {
     const data = parsed.toJSON();
 
     if (!data?.workflow) {
-      return { doc: null, error: "Missing root `workflow` object.", rawIssues };
+      return {
+        doc: null,
+        error: "Missing root `workflow` object.",
+        rawIssues,
+      };
     }
 
     if (!Array.isArray(data.workflow.steps)) {
-      return { doc: null, error: "Missing `workflow.steps` array.", rawIssues };
+      return {
+        doc: null,
+        error: "Missing `workflow.steps` array.",
+        rawIssues,
+      };
     }
 
-    return { doc: data as VibeDocument, error: null, rawIssues };
+    return {
+      doc: data as VibeDocument,
+      error: null,
+      rawIssues,
+    };
   } catch (error: any) {
     const location = getYamlErrorLocation(error);
 
