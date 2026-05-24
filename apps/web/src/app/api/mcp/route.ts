@@ -21,7 +21,13 @@ function jsonrpc(id: unknown, result: unknown) {
     result,
   });
 }
-
+export async function GET() {
+  return NextResponse.json({
+    name: "vibeflow-studio-mcp",
+    version: "form-encoded-enabled-1",
+    supportsFormEncoded: true,
+  });
+}
 function jsonrpcError(id: unknown, code: number, message: string) {
   return NextResponse.json({
     jsonrpc: "2.0",
@@ -295,4 +301,5 @@ export async function POST(req: NextRequest) {
   }
 
   return jsonrpcError(id, -32601, `Method not found: ${method}`);
+  
 }
