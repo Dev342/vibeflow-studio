@@ -93,7 +93,7 @@ export function VibesEditor({ initialYaml, sessionId, sessionTitle }: Props) {
 function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const [yaml, setYaml] = useState(initialYaml);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
-  const [hoveredStepId, setHoveredStepId] = useState<string | null>(null);
+  const [highlightedStepId, setHighlightedStepId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [statusMessage, setStatusMessage] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -149,7 +149,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState([] as any[]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as any[]);
 
-  const activeStepId = hoveredStepId ?? selectedStepId;
+  const activeStepId = highlightedStepId;
 
   const connectedStepIds = useMemo(() => {
     const ids = new Set<string>();
@@ -347,7 +347,9 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
 
   function focusStep(stepId?: string) {
     if (!stepId) return;
+
     setSelectedStepId(stepId);
+    setHighlightedStepId(stepId);
 
     const node = graph.nodes.find((item) => item.id === stepId);
 
@@ -363,6 +365,10 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     if (!stepId) return;
     focusStep(stepId);
     jumpToYamlLine(findStepLineNumber(stepId), 1);
+  }
+
+  function clearGraphHighlight() {
+    setHighlightedStepId(null);
   }
 
   function jumpToIssue(issue: {
@@ -808,8 +814,7 @@ Do not change the YAML unless I explicitly ask.`
           }}
           onInit={setFlowInstance}
           onNodeClick={(_, node: any) => jumpToStep(node.id)}
-          onNodeMouseEnter={(_, node: any) => setHoveredStepId(node.id)}
-          onNodeMouseLeave={() => setHoveredStepId(null)}
+          onPaneClick={clearGraphHighlight}
           proOptions={{ hideAttribution: true }}
           className="relative z-0"
         >
