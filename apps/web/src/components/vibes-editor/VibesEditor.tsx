@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   Clipboard,
   Download,
+  ExternalLink,
   FileCode2,
   Loader2,
   Maximize2,
@@ -109,7 +110,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     {
       role: "assistant",
       text:
-        "I can explain this StudioX Vibe, fix validation issues, add steps, rewrite branches, or improve the workflow. I only change YAML after you apply the proposed update.",
+        "I can explain this StudioX Vibe, fix validation issues, add steps, rewrite branches, or improve the workflow. I remember the recent messages in this panel during this session.",
     },
   ]);
 
@@ -123,6 +124,21 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     () => [...(parsed.rawIssues ?? []), ...(parsed.doc ? validateVibe(parsed.doc) : [])],
     [parsed.doc, parsed.rawIssues]
   );
+
+  const displayedIssues = useMemo(() => {
+    if (issues.length > 0) return issues;
+
+    if (parsed.error) {
+      const fallbackIssue: VibeIssue = {
+        severity: "error",
+        message: parsed.error,
+      };
+
+      return [fallbackIssue];
+    }
+
+    return [];
+  }, [issues, parsed.error]);
 
   const graph = useMemo(
     () => (parsed.doc ? buildVibeGraph(parsed.doc, issues) : { nodes: [], edges: [] }),
@@ -179,8 +195,16 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     return YAML.stringify(selectedStep, { lineWidth: 110 });
   }, [selectedStep]);
 
-  const errorCount = issues.filter((issue) => issue.severity === "error").length;
-  const warningCount = issues.filter((issue) => issue.severity === "warning").length;
+  const selectedInput = selectedStep?.input ?? {};
+  const mcpServerUrl =
+    typeof selectedInput.server_url === "string" && selectedInput.server_url.startsWith("http")
+      ? selectedInput.server_url
+      : null;
+  const mcpToolName =
+    typeof selectedInput.tool_name === "string" ? selectedInput.tool_name : null;
+
+  const errorCount = displayedIssues.filter((issue) => issue.severity === "error").length;
+  const warningCount = displayedIssues.filter((issue) => issue.severity === "warning").length;
   const workflowName = parsed.doc?.workflow.name ?? sessionTitle ?? "Invalid YAML";
   const stepCount = parsed.doc?.workflow.steps.length ?? 0;
 
@@ -355,6 +379,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
         body: JSON.stringify({
           prompt,
           yaml,
+          messages: chatMessages.slice(-8),
         }),
       });
 
@@ -408,20 +433,57 @@ Return the full updated YAML. Keep the workflow behavior as close as possible to
     );
   }
 
+  function fixAllIssuesWithAi() {
+    const issueSummary = displayedIssues
+      .map((issue, index) => {
+        const location = issue.lineNumber
+          ? `line ${issue.lineNumber}`
+          : issue.stepId
+            ? `step "${issue.stepId}"`
+            : "workflow";
+
+        return `${index + 1}. ${issue.severity.toUpperCase()} at ${location}: ${issue.message}`;
+      })
+      .join("\n");
+
+    askCopilot(
+      `Fix all StudioX Vibe validation issues below.
+
+Issues:
+${issueSummary || "No validation issues were detected."}
+
+Return the full updated YAML. Keep the workflow behavior as close as possible to the original.`
+    );
+  }
+
+  function getAiRecommendations() {
+    askCopilot(
+      `Review this StudioX Vibe YAML and give concise recommendations for improving it.
+
+Focus on:
+- StudioX correctness
+- safer branching
+- better prompts
+- missing confirmations before write or danger actions
+- useful MCP usage if relevant
+- better validation or error handling
+
+Do not change the YAML unless I explicitly ask.`
+    );
+  }
+
   function applyAiYaml(nextYaml: string) {
     setYamlDirty(nextYaml);
     setStatusMessage("AI changes applied. Review the graph and click Save.");
     setCopilotOpen(false);
   }
 
-  const parseIssue = parsed.rawIssues?.find((issue) => issue.severity === "error");
-
   return (
     <div
       className="grid h-screen overflow-hidden bg-slate-950 text-white"
       style={{ gridTemplateColumns }}
     >
-      <style jsx global>{`
+      <style>{`
         .react-flow__controls {
           box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35) !important;
           overflow: hidden !important;
@@ -491,18 +553,26 @@ Return the full updated YAML. Keep the workflow behavior as close as possible to
               </div>
             </div>
 
-            <div className="mt-3 max-h-[43vh] space-y-2 overflow-auto pr-1">
-              {parsed.error && (
-                <IssueCard
-                  severity="error"
-                  message={parsed.error}
-                  lineNumber={parseIssue?.lineNumber}
-                  onClick={() => jumpToIssue(parseIssue ?? {})}
-                  onAiFix={parseIssue ? () => fixIssueWithAi(parseIssue) : undefined}
-                />
-              )}
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                onClick={fixAllIssuesWithAi}
+                disabled={displayedIssues.length === 0 || aiLoading}
+                className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs font-bold text-cyan-100 transition hover:bg-cyan-300/15 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Fix all with AI
+              </button>
 
-              {!parsed.error && issues.length === 0 && (
+              <button
+                onClick={getAiRecommendations}
+                disabled={aiLoading}
+                className="rounded-2xl border border-white/10 bg-white/10 px-3 py-2 text-xs font-bold text-slate-100 transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                AI recommendations
+              </button>
+            </div>
+
+            <div className="mt-3 max-h-[39vh] space-y-2 overflow-auto pr-1">
+              {displayedIssues.length === 0 && (
                 <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-sm text-emerald-100">
                   <div className="flex items-center gap-2">
                     <CheckCircle2 size={16} />
@@ -511,7 +581,7 @@ Return the full updated YAML. Keep the workflow behavior as close as possible to
                 </div>
               )}
 
-              {issues.map((issue, i) => (
+              {displayedIssues.map((issue, i) => (
                 <IssueCard
                   key={`${issue.stepId ?? "global"}-${issue.lineNumber ?? "no-line"}-${i}`}
                   severity={issue.severity}
@@ -764,17 +834,37 @@ Return the full updated YAML. Keep the workflow behavior as close as possible to
             </div>
           ) : (
             <div className="mt-4 h-[215px] overflow-auto rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
-              <button
-                onClick={() => jumpToStep(selectedStep.id)}
-                className="mb-3 rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100"
-              >
-                Jump to YAML
-              </button>
+              <div className="mb-3 flex flex-wrap gap-2">
+                <button
+                  onClick={() => jumpToStep(selectedStep.id)}
+                  className="rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100"
+                >
+                  Jump to YAML
+                </button>
+
+                {mcpServerUrl && (
+                  <a
+                    href={mcpServerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/10 px-3 py-2 text-xs font-semibold text-slate-100 hover:bg-white/15"
+                  >
+                    MCP server
+                    <ExternalLink size={12} />
+                  </a>
+                )}
+              </div>
 
               <div className="font-mono text-sm font-semibold text-slate-100">{selectedStep.id}</div>
               <div className="mt-1 font-mono text-xs text-slate-500">
                 function: {selectedStep.function}
               </div>
+
+              {mcpToolName && (
+                <div className="mt-3 rounded-2xl border border-cyan-300/15 bg-cyan-300/10 px-3 py-2 text-xs text-cyan-100">
+                  MCP tool: <span className="font-mono">{mcpToolName}</span>
+                </div>
+              )}
 
               <pre className="mt-4 whitespace-pre-wrap rounded-2xl border border-slate-800 bg-slate-950 p-3 text-xs leading-5 text-slate-300">
                 {selectedStepYaml}

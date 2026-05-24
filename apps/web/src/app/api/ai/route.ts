@@ -23,14 +23,16 @@ Rules:
     "yaml": "Full updated YAML if changed, otherwise null",
     "summary": "Short summary of the change or null"
   }
-- If the user asks for an explanation, do not change YAML.
+- If the user asks for explanation, recommendations, review, or suggestions, do not change YAML unless explicitly asked.
 - If the user asks to add, remove, rewrite, fix, or improve workflow behavior, return the full updated YAML.
 - Preserve the existing workflow structure when possible.
-- Prefer valid StudioX functions: aiExtractVariables, promptUser, handleConditional, apiRequest, mcpCallTool, queryKnowledgebase, sendResponse, setVariable, loopFlow.
+- Prefer valid StudioX functions: aiExtractVariables, aiProcessing, promptUser, handleConditional, apiRequest, mcpCallTool, mcpListTools, mcpReadResource, queryKnowledgebase, sendResponse, sendText, setVariable, loopFlow.
 - Variable references should stay on one line and use format \${steps.step_id.output.field}.
+- MCP steps should use the StudioX mcpCallTool shape when calling external MCP servers.
 - Keep YAML clean and valid.
 - Do not invent API secrets.
 - Do not claim the workflow was deployed or executed.
+- When fixing errors, keep workflow behavior as close as possible to the original.
 `;
 
 function extractJson(text: string): AiPayload {
@@ -48,12 +50,24 @@ function extractJson(text: string): AiPayload {
   }
 }
 
+function formatRecentMessages(messages: any[]) {
+  return messages
+    .filter((message) => message && typeof message.text === "string" && typeof message.role === "string")
+    .slice(-8)
+    .map((message) => `${message.role}: ${message.text}`)
+    .join("\n\n");
+}
+
 async function callAnthropic(prompt: string) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  const model = process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6";
+  const model = process.env.ANTHROPIC_MODEL;
 
   if (!apiKey) {
     throw new Error("Missing ANTHROPIC_API_KEY.");
+  }
+
+  if (!model) {
+    throw new Error("Missing ANTHROPIC_MODEL.");
   }
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -101,7 +115,7 @@ async function callOpenAI(prompt: string) {
   }
 
   if (!model) {
-    throw new Error("Missing OPENAI_MODEL. Add your preferred OpenAI model name in Vercel env vars.");
+    throw new Error("Missing OPENAI_MODEL.");
   }
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -147,6 +161,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const userPrompt = body.prompt;
     const yaml = body.yaml;
+    const messages = Array.isArray(body.messages) ? body.messages : [];
 
     if (!userPrompt || typeof userPrompt !== "string") {
       return NextResponse.json({ error: "Missing prompt string." }, { status: 400 });
@@ -156,12 +171,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing yaml string." }, { status: 400 });
     }
 
+    const recentConversation = formatRecentMessages(messages);
+
     const prompt = `
 Current StudioX Vibe YAML:
 
 ${yaml}
 
-User request:
+Recent copilot conversation:
+
+${recentConversation || "No prior copilot messages in this session."}
+
+Latest user request:
 
 ${userPrompt}
 
