@@ -70,7 +70,7 @@ export async function PATCH(req: NextRequest, context: { params: Promise<{ id: s
   }
 
   const parsed = parseVibeYaml(body.yaml);
-  const issues = parsed.doc ? validateVibe(parsed.doc) : [];
+  const issues = [...(parsed.rawIssues ?? []), ...(parsed.doc ? validateVibe(parsed.doc) : [])];
   const title = body.title ?? parsed.doc?.workflow.name ?? "Untitled Vibe";
 
   const supabase = getSupabaseServerClient();

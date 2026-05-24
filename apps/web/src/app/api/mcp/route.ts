@@ -170,7 +170,7 @@ function validateYaml(id: unknown, args: Record<string, unknown>) {
   }
 
   const parsed = parseVibeYaml(yaml);
-  const issues = parsed.doc ? validateVibe(parsed.doc) : [];
+  const issues = [...(parsed.rawIssues ?? []), ...(parsed.doc ? validateVibe(parsed.doc) : [])];
 
   return jsonrpc(id, {
     content: [

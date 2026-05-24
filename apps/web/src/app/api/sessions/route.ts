@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
   }
 
   const parsed = parseVibeYaml(yaml);
-  const issues = parsed.doc ? validateVibe(parsed.doc) : [];
+  const issues = [...(parsed.rawIssues ?? []), ...(parsed.doc ? validateVibe(parsed.doc) : [])];
 
   const id = nanoid(10);
   const supabase = getSupabaseServerClient();

@@ -88,7 +88,10 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const dragState = useRef<null | "left" | "right">(null);
 
   const parsed = useMemo(() => parseVibeYaml(yaml), [yaml]);
-  const issues = useMemo(() => (parsed.doc ? validateVibe(parsed.doc) : []), [parsed.doc]);
+  const issues = useMemo(
+  () => [...(parsed.rawIssues ?? []), ...(parsed.doc ? validateVibe(parsed.doc) : [])],
+  [parsed.doc, parsed.rawIssues]
+);
   const graph = useMemo(
     () => (parsed.doc ? buildVibeGraph(parsed.doc, issues) : { nodes: [], edges: [] }),
     [parsed.doc, issues]
