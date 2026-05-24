@@ -39,13 +39,13 @@ export type VibeGraph = {
     data: VibeGraphNodeData;
   }>;
   edges: Array<{
-  id: string;
-  source: string;
-  target: string;
-  label?: string;
-  animated?: boolean;
-  type?: string;
-  data?: Record<string, any>;
-  markerEnd?: any;
-}>;
+    id: string;
+    source: string;
+    target: string;
+    label?: string;
+    animated?: boolean;
+    type?: string;
+    data?: Record<string, any>;
+    markerEnd?: any;
+  }>;
 };

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   ReactFlow,
   Background,
@@ -15,6 +16,7 @@ import Editor from "@monaco-editor/react";
 import YAML from "yaml";
 import {
   AlertTriangle,
+  Bot,
   CheckCircle2,
   Clipboard,
   Download,
@@ -27,7 +29,10 @@ import {
   PanelRightOpen,
   RefreshCcw,
   Save,
+  Send,
   Sparkles,
+  Wand2,
+  X,
 } from "lucide-react";
 import { parseVibeYaml, stringifyVibeYaml } from "@/lib/vibes/parse";
 import { validateVibe } from "@/lib/vibes/validate";
@@ -52,6 +57,17 @@ type Props = {
 };
 
 type SaveState = "idle" | "saving" | "saved" | "error";
+
+type ChatMessage = {
+  role: "user" | "assistant";
+  text: string;
+  proposedYaml?: string | null;
+  validation?: {
+    valid: boolean;
+    issueCount: number;
+    parseError: string | null;
+  } | null;
+};
 
 const riskColors: Record<string, string> = {
   read: "#34d399",
@@ -84,6 +100,17 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const [rightWidth, setRightWidth] = useState(520);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
+
+  const [copilotOpen, setCopilotOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      role: "assistant",
+      text:
+        "Ask me to explain this Vibe, fix validation errors, add a confirmation step, add an API call, or improve the workflow. I will return changes you can apply.",
+    },
+  ]);
 
   const dragState = useRef<null | "left" | "right">(null);
   const yamlEditorRef = useRef<any>(null);
@@ -175,7 +202,6 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
 
     const lines = yaml.split(/\r?\n/);
     const pattern = new RegExp(`^\\s*-?\\s*id:\\s*["']?${escapeRegExp(stepId)}["']?\\s*$`);
-
     const index = lines.findIndex((line) => pattern.test(line));
 
     return index >= 0 ? index + 1 : null;
@@ -197,6 +223,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     setSelectedStepId(stepId);
 
     const node = graph.nodes.find((item) => item.id === stepId);
+
     if (node && flowInstance) {
       flowInstance.setCenter(node.position.x + 160, node.position.y + 80, {
         zoom: 1.05,
@@ -290,31 +317,65 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     setStatusMessage(`Downloaded ${filename}.`);
   }
 
-  function updateSelectedStepYaml(value: string | undefined) {
-    if (!parsed.doc || !selectedStep || !value) return;
+  async function askCopilot() {
+    const prompt = aiPrompt.trim();
+
+    if (!prompt || aiLoading) return;
+
+    setChatMessages((prev) => [...prev, { role: "user", text: prompt }]);
+    setAiPrompt("");
+    setAiLoading(true);
 
     try {
-      const nextStep = YAML.parse(value);
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          prompt,
+          yaml,
+        }),
+      });
 
-      if (!nextStep || typeof nextStep.id !== "string" || typeof nextStep.function !== "string") {
-        setStatusMessage("Selected step must include string id and function fields.");
-        setSaveState("error");
-        return;
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error ?? "AI request failed.");
       }
 
-      const nextDoc = structuredClone(parsed.doc);
-      const index = nextDoc.workflow.steps.findIndex((step) => step.id === selectedStep.id);
-
-      if (index === -1) return;
-
-      nextDoc.workflow.steps[index] = nextStep;
-      setYamlDirty(stringifyVibeYaml(nextDoc));
-      setSelectedStepId(nextStep.id);
-      setSaveState("idle");
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: data.reply ?? "Done.",
+          proposedYaml: data.changed ? data.yaml : null,
+          validation: data.validation
+            ? {
+                valid: data.validation.valid,
+                issueCount: data.validation.issueCount,
+                parseError: data.validation.parseError,
+              }
+            : null,
+        },
+      ]);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Invalid step YAML.");
-      setSaveState("error");
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: error instanceof Error ? error.message : "AI request failed.",
+        },
+      ]);
+    } finally {
+      setAiLoading(false);
     }
+  }
+
+  function applyAiYaml(nextYaml: string) {
+    setYamlDirty(nextYaml);
+    setStatusMessage("AI changes applied. Review the graph and click Save.");
+    setCopilotOpen(false);
   }
 
   const parseIssue = parsed.rawIssues?.find((issue) => issue.severity === "error");
@@ -406,9 +467,8 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
           <div className="mt-auto rounded-3xl border border-white/10 bg-white/[0.05] p-4 text-xs text-slate-400">
             <div className="font-semibold text-slate-200">Demo hint</div>
             <div className="mt-2 leading-5">
-              Break a branch target or set{" "}
-              <span className="font-mono text-slate-200">temperature: 20</span> to show live
-              validation.
+              Ask Copilot: <span className="text-slate-200">“Fix the validation errors”</span> or{" "}
+              <span className="text-slate-200">“Add a manager approval step.”</span>
             </div>
           </div>
         </div>
@@ -445,6 +505,11 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
             </div>
 
             <div className="flex flex-wrap items-center justify-end gap-2">
+              <ToolbarButton onClick={() => setCopilotOpen(true)}>
+                <Bot size={15} />
+                AI Copilot
+              </ToolbarButton>
+
               <ToolbarButton onClick={() => setLeftOpen((value) => !value)}>
                 {leftOpen ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
                 Left
@@ -514,6 +579,100 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
             zoomable
           />
         </ReactFlow>
+
+        {copilotOpen && (
+          <div className="absolute bottom-5 right-5 top-24 z-40 flex w-[420px] flex-col overflow-hidden rounded-3xl border border-white/10 bg-slate-950/95 shadow-2xl backdrop-blur-xl">
+            <div className="flex items-center justify-between border-b border-white/10 p-4">
+              <div className="flex items-center gap-2">
+                <div className="rounded-2xl bg-cyan-300/10 p-2 text-cyan-200">
+                  <Wand2 size={17} />
+                </div>
+                <div>
+                  <div className="text-sm font-black">VibeFlow Copilot</div>
+                  <div className="text-xs text-slate-500">Explain, fix, and modify this YAML</div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setCopilotOpen(false)}
+                className="rounded-xl border border-white/10 bg-white/5 p-2 text-slate-300 hover:bg-white/10"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="flex-1 space-y-3 overflow-auto p-4">
+              {chatMessages.map((message, index) => (
+                <div
+                  key={index}
+                  className={`rounded-2xl border p-3 text-sm leading-6 ${
+                    message.role === "user"
+                      ? "ml-8 border-cyan-300/20 bg-cyan-300/10 text-cyan-50"
+                      : "mr-8 border-white/10 bg-white/[0.06] text-slate-200"
+                  }`}
+                >
+                  <div className="whitespace-pre-wrap">{message.text}</div>
+
+                  {message.validation && (
+                    <div
+                      className={`mt-3 rounded-xl border px-3 py-2 text-xs ${
+                        message.validation.valid
+                          ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                          : "border-amber-400/20 bg-amber-400/10 text-amber-100"
+                      }`}
+                    >
+                      Proposed YAML validation:{" "}
+                      {message.validation.valid ? "valid" : `${message.validation.issueCount} issue(s)`}
+                    </div>
+                  )}
+
+                  {message.proposedYaml && (
+                    <button
+                      onClick={() => applyAiYaml(message.proposedYaml!)}
+                      className="mt-3 inline-flex items-center gap-2 rounded-xl bg-cyan-300 px-3 py-2 text-xs font-bold text-slate-950"
+                    >
+                      <Wand2 size={13} />
+                      Apply AI changes
+                    </button>
+                  )}
+                </div>
+              ))}
+
+              {aiLoading && (
+                <div className="mr-8 rounded-2xl border border-white/10 bg-white/[0.06] p-3 text-sm text-slate-300">
+                  <div className="flex items-center gap-2">
+                    <Loader2 size={15} className="animate-spin" />
+                    Thinking...
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-white/10 p-4">
+              <textarea
+                value={aiPrompt}
+                onChange={(event) => setAiPrompt(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                    event.preventDefault();
+                    askCopilot();
+                  }
+                }}
+                placeholder="Ask: explain this Vibe, fix validation errors, add approval branch..."
+                className="h-24 w-full resize-none rounded-2xl border border-white/10 bg-slate-900 p-3 text-sm text-white outline-none placeholder:text-slate-500"
+              />
+
+              <button
+                onClick={askCopilot}
+                disabled={aiLoading || !aiPrompt.trim()}
+                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-bold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {aiLoading ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                Send to Copilot
+              </button>
+            </div>
+          </div>
+        )}
       </main>
 
       <aside
@@ -521,13 +680,11 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
           rightOpen ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
-        <section className="border-b border-white/10 bg-slate-950 p-4">
+        <section className="overflow-hidden border-b border-white/10 bg-slate-950 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-black">Inspector</div>
-              <div className="mt-1 text-xs text-slate-500">
-                Edit the selected step or inspect workflow metadata.
-              </div>
+              <div className="mt-1 text-xs text-slate-500">Selected node details.</div>
             </div>
 
             <div
@@ -541,36 +698,18 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
 
           {!selectedStep ? (
             <div className="mt-6 rounded-3xl border border-slate-800 bg-slate-900/70 p-5 text-sm leading-6 text-slate-400">
-              Select a node to edit that step directly. For full workflow edits, use the YAML source
-              panel below.
+              Select a node to inspect it. Edit the source YAML below for stable editing.
             </div>
           ) : (
-            <div className="mt-4 grid h-[250px] grid-rows-[auto_1fr] overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/70">
-              <div className="border-b border-slate-800 px-4 py-3">
-                <div className="truncate font-mono text-sm font-semibold text-slate-100">
-                  {selectedStep.id}
-                </div>
-                <div className="mt-1 truncate font-mono text-xs text-slate-500">
-                  function: {selectedStep.function}
-                </div>
+            <div className="mt-4 h-[250px] overflow-auto rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+              <div className="font-mono text-sm font-semibold text-slate-100">{selectedStep.id}</div>
+              <div className="mt-1 font-mono text-xs text-slate-500">
+                function: {selectedStep.function}
               </div>
 
-              <Editor
-                height="100%"
-                language="yaml"
-                theme="vs-dark"
-                value={selectedStepYaml}
-                onChange={updateSelectedStepYaml}
-                options={{
-                  minimap: { enabled: false },
-                  fontSize: 12,
-                  wordWrap: "on",
-                  lineNumbers: "off",
-                  folding: false,
-                  scrollBeyondLastLine: false,
-                  automaticLayout: true,
-                }}
-              />
+              <pre className="mt-4 whitespace-pre-wrap rounded-2xl border border-slate-800 bg-slate-950 p-3 text-xs leading-5 text-slate-300">
+                {selectedStepYaml}
+              </pre>
             </div>
           )}
         </section>
@@ -662,7 +801,7 @@ function Metric({
   );
 }
 
-function ToolbarButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function ToolbarButton({ children, onClick }: { children: ReactNode; onClick: () => void }) {
   return (
     <button
       onClick={onClick}

@@ -158,16 +158,6 @@ function pushIssue(
 }
 
 function closestKey(key: string, candidates: string[]) {
-  const lower = key.toLowerCase();
-
-  const direct = candidates.find((candidate) => candidate.toLowerCase() === lower);
-  if (direct) return direct;
-
-  const starts = candidates.find(
-    (candidate) => candidate.startsWith(key) || key.startsWith(candidate)
-  );
-  if (starts) return starts;
-
   const commonTypos: Record<string, string> = {
     typ: "type",
     the: "then",
@@ -183,7 +173,13 @@ function closestKey(key: string, candidates: string[]) {
     variable_to_extract: "variables_to_extract",
   };
 
-  return commonTypos[key];
+  if (commonTypos[key]) return commonTypos[key];
+
+  const lower = key.toLowerCase();
+  const exact = candidates.find((candidate) => candidate.toLowerCase() === lower);
+  if (exact) return exact;
+
+  return candidates.find((candidate) => candidate.startsWith(key) || key.startsWith(candidate));
 }
 
 function warnUnknownKeys(
@@ -198,6 +194,7 @@ function warnUnknownKeys(
   for (const key of Object.keys(obj)) {
     if (!knownKeys.includes(key)) {
       const suggestion = closestKey(key, knownKeys);
+
       pushIssue(
         issues,
         "warning",
@@ -235,14 +232,40 @@ function validateVariableReferences(
   path: string
 ) {
   if (typeof value === "string") {
-    const refs = value.match(/\$\{[^}]+}/g) ?? [];
+    const openCount = (value.match(/\$\{/g) ?? []).length;
+    const closeCount = (value.match(/}/g) ?? []).length;
+
+    if (openCount !== closeCount) {
+      pushIssue(
+        issues,
+        "error",
+        `Broken variable reference at ${path}. Found ${openCount} opening "\${" token(s) and ${closeCount} closing "}" token(s).`,
+        stepId
+      );
+    }
+
+    const refs = value.match(/\$\{[\s\S]*?}/g) ?? [];
 
     for (const ref of refs) {
-      if (!ref.startsWith("${steps.") && !ref.startsWith("${conversationContext")) {
+      const compactRef = ref.replace(/\s+/g, " ");
+
+      if (/\n|\r/.test(ref)) {
+        pushIssue(
+          issues,
+          "error",
+          `Variable reference at ${path} spans multiple lines: ${compactRef}. Keep variable references on one line.`,
+          stepId
+        );
+      }
+
+      const validStepRef = /^\$\{steps\.[A-Za-z0-9_-]+\.output(\.[A-Za-z0-9_-]+)+}$/.test(ref);
+      const validContextRef = ref === "${conversationContext}";
+
+      if (!validStepRef && !validContextRef) {
         pushIssue(
           issues,
           "warning",
-          `Variable reference ${ref} at ${path} is unusual. Expected ${"${steps.step_id.output.field}"} or ${"${conversationContext}"}.`,
+          `Variable reference ${compactRef} at ${path} does not match expected format ${"${steps.step_id.output.field}"}.`,
           stepId
         );
       }
@@ -252,7 +275,9 @@ function validateVariableReferences(
   }
 
   if (Array.isArray(value)) {
-    value.forEach((item, index) => validateVariableReferences(issues, item, stepId, `${path}[${index}]`));
+    value.forEach((item, index) =>
+      validateVariableReferences(issues, item, stepId, `${path}[${index}]`)
+    );
     return;
   }
 
@@ -280,7 +305,9 @@ function validateInputRules(issues: VibeIssue[], step: VibeStep) {
   }
 
   for (const group of rule.oneOf ?? []) {
-    const hasAny = group.some((key) => input[key] !== undefined && input[key] !== null && input[key] !== "");
+    const hasAny = group.some(
+      (key) => input[key] !== undefined && input[key] !== null && input[key] !== ""
+    );
 
     if (!hasAny) {
       pushIssue(
@@ -289,6 +316,22 @@ function validateInputRules(issues: VibeIssue[], step: VibeStep) {
         `${step.function} requires one of: ${group.map((key) => `input.${key}`).join(", ")}.`,
         step.id
       );
+    }
+  }
+
+  if (step.function === "promptUser") {
+    if (input.prompt_type === null) {
+      pushIssue(issues, "error", "promptUser input.prompt_type cannot be null.", step.id);
+    }
+
+    if (input.prompt !== undefined && typeof input.prompt !== "string") {
+      pushIssue(issues, "error", "promptUser input.prompt must be a string.", step.id);
+    }
+  }
+
+  if (step.function === "sendResponse") {
+    if (input.message !== undefined && typeof input.message !== "string") {
+      pushIssue(issues, "error", "sendResponse input.message must be a string.", step.id);
     }
   }
 }
@@ -329,8 +372,7 @@ function validateAiExtractVariables(issues: VibeIssue[], step: VibeStep) {
 }
 
 function validateHandleConditional(issues: VibeIssue[], step: VibeStep) {
-  const input = step.input ?? {};
-  const condition = input.condition;
+  const condition = step.input?.condition;
 
   if (!isPlainObject(condition)) {
     pushIssue(issues, "error", "handleConditional input.condition must be an object.", step.id);
@@ -384,15 +426,6 @@ function validateHandleConditional(issues: VibeIssue[], step: VibeStep) {
         step.id
       );
     }
-
-    if (typeof inner.left === "string" && inner.left.includes("${") === false) {
-      pushIssue(
-        issues,
-        "info",
-        "condition.condition.left is a literal value. Usually this references a previous step output.",
-        step.id
-      );
-    }
   }
 
   if (condition.then !== undefined && !isPlainObject(condition.then)) {
@@ -430,21 +463,6 @@ function validateHandleConditional(issues: VibeIssue[], step: VibeStep) {
 
   if (condition.cases !== undefined && !Array.isArray(condition.cases)) {
     pushIssue(issues, "error", "condition.cases must be an array.", step.id);
-  }
-
-  if (Array.isArray(condition.cases)) {
-    for (const [index, item] of condition.cases.entries()) {
-      if (!isPlainObject(item)) {
-        pushIssue(issues, "error", `condition.cases[${index}] must be an object.`, step.id);
-        continue;
-      }
-
-      warnUnknownKeys(issues, item, ["label", "value", "next"], `condition.cases[${index}]`, step.id);
-
-      if (!item.next) {
-        pushIssue(issues, "error", `condition.cases[${index}] is missing next target.`, step.id);
-      }
-    }
   }
 }
 

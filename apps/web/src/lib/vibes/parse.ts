@@ -19,9 +19,34 @@ function lintRawYaml(source: string): VibeIssue[] {
 
     if (!trimmed || trimmed.startsWith("#")) return;
 
-    // Skip normal text inside prompt: | or message: | blocks.
+    const malformedKeyNoSpace = /^[A-Za-z0-9_$.-]+:[^\s|>]/.test(trimmed);
+
+    if (malformedKeyNoSpace) {
+      issues.push({
+        severity: "error",
+        lineNumber,
+        column: indent + 1,
+        message: `Malformed YAML key on line ${lineNumber}: "${trimmed}". Add a space after the colon, for example "input: ...".`,
+      });
+    }
+
     if (blockScalarIndent !== null) {
-      if (indent >= blockScalarIndent) return;
+      if (indent >= blockScalarIndent) {
+        const openRefs = (trimmed.match(/\$\{/g) ?? []).length;
+        const closeRefs = (trimmed.match(/}/g) ?? []).length;
+
+        if (openRefs !== closeRefs && trimmed.includes("${")) {
+          issues.push({
+            severity: "warning",
+            lineNumber,
+            column: indent + 1,
+            message: `Possible broken variable reference on line ${lineNumber}. Variable references should stay on one line like "\${steps.step_id.output.field}".`,
+          });
+        }
+
+        return;
+      }
+
       blockScalarIndent = null;
     }
 
@@ -46,7 +71,7 @@ function lintRawYaml(source: string): VibeIssue[] {
       trimmed === "false" ||
       trimmed === "null";
 
-    if (!isKeyValue && !isQuotedString && !isStandaloneAllowed) {
+    if (!isKeyValue && !isQuotedString && !isStandaloneAllowed && !malformedKeyNoSpace) {
       issues.push({
         severity: "warning",
         lineNumber,
@@ -107,26 +132,14 @@ export function parseVibeYaml(source: string): {
     const data = parsed.toJSON();
 
     if (!data?.workflow) {
-      return {
-        doc: null,
-        error: "Missing root `workflow` object.",
-        rawIssues,
-      };
+      return { doc: null, error: "Missing root `workflow` object.", rawIssues };
     }
 
     if (!Array.isArray(data.workflow.steps)) {
-      return {
-        doc: null,
-        error: "Missing `workflow.steps` array.",
-        rawIssues,
-      };
+      return { doc: null, error: "Missing `workflow.steps` array.", rawIssues };
     }
 
-    return {
-      doc: data as VibeDocument,
-      error: null,
-      rawIssues,
-    };
+    return { doc: data as VibeDocument, error: null, rawIssues };
   } catch (error: any) {
     const location = getYamlErrorLocation(error);
 
