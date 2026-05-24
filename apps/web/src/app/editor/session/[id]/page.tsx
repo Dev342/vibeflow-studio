@@ -4,7 +4,6 @@ import { sampleYaml } from "@/lib/vibes/sample";
 
 export default async function SessionEditorPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-
   const supabase = getSupabaseServerClient();
 
   const { data } = await supabase
@@ -13,5 +12,11 @@ export default async function SessionEditorPage({ params }: { params: Promise<{ 
     .eq("id", id)
     .single();
 
-  return <VibesEditor initialYaml={data?.yaml ?? sampleYaml} />;
+  return (
+    <VibesEditor
+      initialYaml={data?.yaml ?? sampleYaml}
+      sessionId={id}
+      sessionTitle={data?.title ?? "StudioX Vibe"}
+    />
+  );
 }

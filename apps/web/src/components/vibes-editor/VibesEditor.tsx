@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -12,6 +12,19 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import Editor from "@monaco-editor/react";
+import YAML from "yaml";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Clipboard,
+  Download,
+  FileCode2,
+  Loader2,
+  Maximize2,
+  RefreshCcw,
+  Save,
+  Sparkles,
+} from "lucide-react";
 import { parseVibeYaml, stringifyVibeYaml } from "@/lib/vibes/parse";
 import { validateVibe } from "@/lib/vibes/validate";
 import { buildVibeGraph } from "@/lib/vibes/graph";
@@ -30,11 +43,38 @@ const nodeTypes = {
 
 type Props = {
   initialYaml: string;
+  sessionId?: string;
+  sessionTitle?: string;
 };
 
-export function VibesEditor({ initialYaml }: Props) {
+type SaveState = "idle" | "saving" | "saved" | "error";
+
+const riskColors: Record<string, string> = {
+  read: "#34d399",
+  write: "#f59e0b",
+  danger: "#f87171",
+  unknown: "#94a3b8",
+};
+
+export function VibesEditor({ initialYaml, sessionId, sessionTitle }: Props) {
+  return (
+    <ReactFlowProvider>
+      <VibesEditorInner
+        initialYaml={initialYaml}
+        sessionId={sessionId}
+        sessionTitle={sessionTitle}
+      />
+    </ReactFlowProvider>
+  );
+}
+
+function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const [yaml, setYaml] = useState(initialYaml);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [statusMessage, setStatusMessage] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [flowInstance, setFlowInstance] = useState<any>(null);
 
   const parsed = useMemo(() => parseVibeYaml(yaml), [yaml]);
   const issues = useMemo(() => (parsed.doc ? validateVibe(parsed.doc) : []), [parsed.doc]);
@@ -43,132 +83,471 @@ export function VibesEditor({ initialYaml }: Props) {
     [parsed.doc, issues]
   );
 
-  const [, , onNodesChange] = useNodesState(graph.nodes);
-  const [, , onEdgesChange] = useEdgesState(graph.edges);
+  const [nodes, setNodes, onNodesChange] = useNodesState([] as any[]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([] as any[]);
+
+  useEffect(() => {
+    setNodes(graph.nodes as any[]);
+    setEdges(graph.edges as any[]);
+  }, [graph, setEdges, setNodes]);
 
   const selectedStep = parsed.doc?.workflow.steps.find((s) => s.id === selectedStepId);
 
-  function updateSelectedPrompt(value: string) {
-    if (!parsed.doc || !selectedStep) return;
+  const selectedStepYaml = useMemo(() => {
+    if (!selectedStep) return "";
+    return YAML.stringify(selectedStep, { lineWidth: 110 });
+  }, [selectedStep]);
 
-    const nextDoc = structuredClone(parsed.doc);
-    const step = nextDoc.workflow.steps.find((s) => s.id === selectedStep.id);
-    if (!step) return;
+  const errorCount = issues.filter((issue) => issue.severity === "error").length;
+  const warningCount = issues.filter((issue) => issue.severity === "warning").length;
+  const workflowName = parsed.doc?.workflow.name ?? sessionTitle ?? "Invalid YAML";
+  const stepCount = parsed.doc?.workflow.steps.length ?? 0;
 
-    step.input = step.input ?? {};
-    step.input.prompt = value;
+  function setYamlDirty(nextYaml: string) {
+    setYaml(nextYaml);
+    setDirty(true);
+    if (saveState === "saved") setSaveState("idle");
+  }
 
-    setYaml(stringifyVibeYaml(nextDoc));
+  function focusStep(stepId?: string) {
+    if (!stepId) return;
+    setSelectedStepId(stepId);
+
+    const node = graph.nodes.find((item) => item.id === stepId);
+    if (node && flowInstance) {
+      flowInstance.setCenter(node.position.x + 160, node.position.y + 80, {
+        zoom: 1.05,
+        duration: 450,
+      });
+    }
+  }
+
+  async function saveSession() {
+    if (!sessionId) {
+      setStatusMessage("This demo page is not a saved session. Open a /editor/session link to save.");
+      setSaveState("error");
+      return;
+    }
+
+    setSaveState("saving");
+    setStatusMessage("Saving session...");
+
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: parsed.doc?.workflow.name ?? sessionTitle ?? "StudioX Vibe",
+          yaml,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error ?? "Save failed.");
+      }
+
+      setDirty(false);
+      setSaveState("saved");
+      setStatusMessage(
+        data.valid
+          ? "Saved. Workflow is valid."
+          : `Saved with ${data.issueCount ?? 0} validation issue(s).`
+      );
+
+      window.setTimeout(() => {
+        setSaveState("idle");
+      }, 1800);
+    } catch (error) {
+      setSaveState("error");
+      setStatusMessage(error instanceof Error ? error.message : "Save failed.");
+    }
+  }
+
+  async function copyYaml() {
+    await navigator.clipboard.writeText(yaml);
+    setStatusMessage("YAML copied to clipboard.");
+    setSaveState("saved");
+
+    window.setTimeout(() => {
+      setSaveState("idle");
+    }, 1200);
+  }
+
+  function downloadYaml() {
+    const filename = `${parsed.doc?.workflow.id ?? "vibe"}.yaml`;
+    const blob = new Blob([yaml], { type: "text/yaml;charset=utf-8" });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = href;
+    link.download = filename;
+    link.click();
+
+    URL.revokeObjectURL(href);
+    setStatusMessage(`Downloaded ${filename}.`);
+  }
+
+  function updateSelectedStepYaml(value: string | undefined) {
+    if (!parsed.doc || !selectedStep || !value) return;
+
+    try {
+      const nextStep = YAML.parse(value);
+
+      if (!nextStep || typeof nextStep.id !== "string" || typeof nextStep.function !== "string") {
+        setStatusMessage("Selected step must include string id and function fields.");
+        setSaveState("error");
+        return;
+      }
+
+      const nextDoc = structuredClone(parsed.doc);
+      const index = nextDoc.workflow.steps.findIndex((step) => step.id === selectedStep.id);
+
+      if (index === -1) return;
+
+      nextDoc.workflow.steps[index] = nextStep;
+      setYamlDirty(stringifyVibeYaml(nextDoc));
+      setSelectedStepId(nextStep.id);
+      setSaveState("idle");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Invalid step YAML.");
+      setSaveState("error");
+    }
   }
 
   return (
-    <div className="grid h-screen grid-cols-[260px_1fr_440px] bg-slate-950 text-white">
-      <aside className="border-r border-slate-800 p-4">
-        <div className="text-lg font-bold">VibeFlow Studio</div>
-        <div className="mt-1 text-xs text-slate-400">Visual editor for StudioX Vibes</div>
+    <div className="grid h-screen grid-cols-[310px_1fr_470px] overflow-hidden bg-slate-950 text-white">
+      <aside className="relative border-r border-white/10 bg-slate-950">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.12),transparent_35%)]" />
 
-        <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-3">
-          <div className="text-sm font-semibold">Workflow</div>
-          <div className="mt-2 text-xs text-slate-400">
-            {parsed.doc?.workflow.name ?? "Invalid YAML"}
-          </div>
-          <div className="mt-3 text-xs text-slate-400">
-            {parsed.doc?.workflow.steps.length ?? 0} steps
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900 p-3">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold">Validation</div>
-            <div className="rounded-full bg-slate-800 px-2 py-1 text-xs">{issues.length}</div>
-          </div>
-
-          <div className="mt-3 space-y-2">
-            {parsed.error && (
-              <div className="rounded-xl bg-red-500/10 p-2 text-xs text-red-200">
-                {parsed.error}
-              </div>
-            )}
-
-            {issues.slice(0, 8).map((issue, i) => (
-              <div key={i} className="rounded-xl bg-slate-800 p-2 text-xs">
-                <div className={issue.severity === "error" ? "text-red-300" : "text-amber-300"}>
-                  {issue.severity.toUpperCase()}
-                </div>
-                <div className="mt-1 text-slate-300">{issue.message}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </aside>
-
-      <main className="relative">
-        <ReactFlowProvider>
-          <ReactFlow
-            nodes={graph.nodes}
-            edges={graph.edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            nodeTypes={nodeTypes}
-            fitView
-            onNodeClick={(_, node) => setSelectedStepId(node.id)}
-          >
-            <Background />
-            <Controls />
-            <MiniMap />
-          </ReactFlow>
-        </ReactFlowProvider>
-      </main>
-
-      <aside className="grid grid-rows-[280px_1fr] border-l border-slate-800">
-        <div className="border-b border-slate-800 p-4">
-          <div className="text-sm font-bold">Inspector</div>
-
-          {!selectedStep && (
-            <div className="mt-4 text-sm text-slate-400">Select a node to edit it.</div>
-          )}
-
-          {selectedStep && (
-            <div className="mt-4 space-y-3">
-              <div>
-                <div className="text-xs text-slate-400">Step ID</div>
-                <div className="font-mono text-sm">{selectedStep.id}</div>
+        <div className="relative flex h-full flex-col p-4">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-4 shadow-2xl backdrop-blur">
+            <div className="flex items-center gap-3">
+              <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-2">
+                <Sparkles size={20} className="text-cyan-200" />
               </div>
 
               <div>
-                <div className="text-xs text-slate-400">Function</div>
-                <div className="font-mono text-sm">{selectedStep.function}</div>
+                <div className="text-lg font-black tracking-tight">VibeFlow Studio</div>
+                <div className="text-xs text-slate-400">StudioX visual workflow editor</div>
               </div>
+            </div>
 
-              {selectedStep.function === "promptUser" && (
-                <div>
-                  <div className="text-xs text-slate-400">Prompt</div>
-                  <textarea
-                    className="mt-2 h-28 w-full rounded-xl border border-slate-700 bg-slate-900 p-2 text-xs outline-none"
-                    value={selectedStep.input?.prompt ?? ""}
-                    onChange={(e) => updateSelectedPrompt(e.target.value)}
-                  />
+            <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
+              <div className="text-xs uppercase tracking-wider text-slate-500">Workflow</div>
+              <div className="mt-1 truncate text-sm font-semibold">{workflowName}</div>
+              <div className="mt-3 flex gap-2">
+                <Metric label="steps" value={stepCount} />
+                <Metric label="errors" value={errorCount} tone={errorCount ? "danger" : "ok"} />
+                <Metric label="warn" value={warningCount} tone={warningCount ? "warn" : "ok"} />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-3xl border border-white/10 bg-white/[0.05] p-4 shadow-xl backdrop-blur">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-bold">Validation</div>
+              <div
+                className={`rounded-full px-2.5 py-1 text-xs ${
+                  errorCount
+                    ? "bg-red-400/10 text-red-200"
+                    : warningCount
+                      ? "bg-amber-400/10 text-amber-200"
+                      : "bg-emerald-400/10 text-emerald-200"
+                }`}
+              >
+                {errorCount ? "needs fix" : warningCount ? "review" : "clean"}
+              </div>
+            </div>
+
+            <div className="mt-3 max-h-[42vh] space-y-2 overflow-auto pr-1">
+              {parsed.error && (
+                <IssueCard
+                  severity="error"
+                  message={parsed.error}
+                  onClick={() => undefined}
+                />
+              )}
+
+              {!parsed.error && issues.length === 0 && (
+                <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-sm text-emerald-100">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 size={16} />
+                    No validation issues.
+                  </div>
                 </div>
               )}
-            </div>
-          )}
-        </div>
 
-        <div>
-          <Editor
-            height="100%"
-            language="yaml"
-            theme="vs-dark"
-            value={yaml}
-            onChange={(value) => setYaml(value ?? "")}
-            options={{
-              minimap: { enabled: false },
-              fontSize: 12,
-              wordWrap: "on",
-            }}
-          />
+              {issues.map((issue, i) => (
+                <IssueCard
+                  key={`${issue.stepId ?? "global"}-${i}`}
+                  severity={issue.severity}
+                  message={issue.message}
+                  stepId={issue.stepId}
+                  onClick={() => focusStep(issue.stepId)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-auto rounded-3xl border border-white/10 bg-white/[0.05] p-4 text-xs text-slate-400">
+            <div className="font-semibold text-slate-200">Demo hint</div>
+            <div className="mt-2 leading-5">
+              Break a branch target or set <span className="font-mono text-slate-200">temperature: 20</span>{" "}
+              to show live validation.
+            </div>
+          </div>
         </div>
       </aside>
+
+      <main className="relative overflow-hidden">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(14,165,233,0.16),transparent_25%),radial-gradient(circle_at_70%_80%,rgba(168,85,247,0.13),transparent_30%)]" />
+
+        <div className="absolute left-4 right-4 top-4 z-10 flex items-center justify-between rounded-3xl border border-white/10 bg-slate-950/75 px-4 py-3 shadow-2xl backdrop-blur-xl">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <FileCode2 size={16} />
+              {sessionId ? `Session ${sessionId}` : "Local demo session"}
+            </div>
+            <div className="mt-0.5 text-xs text-slate-400">
+              {dirty ? "Unsaved changes" : "All changes saved"} · {stepCount} visual node
+              {stepCount === 1 ? "" : "s"}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <ToolbarButton onClick={() => flowInstance?.fitView({ duration: 450 })}>
+              <Maximize2 size={15} />
+              Fit
+            </ToolbarButton>
+
+            <ToolbarButton onClick={() => setYamlDirty(initialYaml)}>
+              <RefreshCcw size={15} />
+              Reset
+            </ToolbarButton>
+
+            <ToolbarButton onClick={copyYaml}>
+              <Clipboard size={15} />
+              Copy
+            </ToolbarButton>
+
+            <ToolbarButton onClick={downloadYaml}>
+              <Download size={15} />
+              Download
+            </ToolbarButton>
+
+            <button
+              onClick={saveSession}
+              disabled={saveState === "saving" || !sessionId || !dirty}
+              className="inline-flex items-center gap-2 rounded-2xl bg-cyan-300 px-4 py-2 text-sm font-bold text-slate-950 shadow-xl transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {saveState === "saving" ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+              Save
+            </button>
+          </div>
+        </div>
+
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          nodeTypes={nodeTypes}
+          fitView
+          onInit={setFlowInstance}
+          onNodeClick={(_, node: any) => setSelectedStepId(node.id)}
+          proOptions={{ hideAttribution: true }}
+          className="relative z-0"
+        >
+          <Background color="#334155" gap={24} size={1} />
+          <Controls
+            className="!bottom-5 !left-5 !rounded-2xl !border !border-white/10 !bg-slate-950/80 !p-1 !shadow-xl !backdrop-blur"
+          />
+          <MiniMap
+            className="!bottom-5 !right-5 !rounded-3xl !border !border-white/10 !bg-slate-950/80 !shadow-2xl"
+            maskColor="rgba(2, 6, 23, 0.68)"
+            nodeColor={(node: any) => riskColors[node.data?.risk ?? "unknown"]}
+            nodeStrokeWidth={3}
+            pannable
+            zoomable
+          />
+        </ReactFlow>
+      </main>
+
+      <aside className="grid grid-rows-[340px_1fr] border-l border-white/10 bg-slate-950">
+        <section className="border-b border-white/10 bg-slate-950 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-black">Inspector</div>
+              <div className="mt-1 text-xs text-slate-500">
+                Edit the selected step or inspect workflow metadata.
+              </div>
+            </div>
+
+            <div
+              className={`rounded-full px-3 py-1 text-xs ${
+                selectedStep ? "bg-cyan-300/10 text-cyan-200" : "bg-slate-800 text-slate-300"
+              }`}
+            >
+              {selectedStep ? selectedStep.function : "No node"}
+            </div>
+          </div>
+
+          {!selectedStep ? (
+            <div className="mt-6 rounded-3xl border border-slate-800 bg-slate-900/70 p-5 text-sm leading-6 text-slate-400">
+              Select a node to edit that step directly. For full workflow edits, use the YAML source
+              panel below.
+            </div>
+          ) : (
+            <div className="mt-4 grid h-[250px] grid-rows-[auto_1fr] overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/70">
+              <div className="border-b border-slate-800 px-4 py-3">
+                <div className="truncate font-mono text-sm font-semibold text-slate-100">
+                  {selectedStep.id}
+                </div>
+                <div className="mt-1 truncate font-mono text-xs text-slate-500">
+                  function: {selectedStep.function}
+                </div>
+              </div>
+
+              <Editor
+                height="100%"
+                language="yaml"
+                theme="vs-dark"
+                value={selectedStepYaml}
+                onChange={updateSelectedStepYaml}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 12,
+                  wordWrap: "on",
+                  lineNumbers: "off",
+                  folding: false,
+                  scrollBeyondLastLine: false,
+                }}
+              />
+            </div>
+          )}
+        </section>
+
+        <section className="grid grid-rows-[auto_1fr] overflow-hidden">
+          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <div>
+              <div className="text-sm font-black">YAML Source</div>
+              <div className="mt-1 text-xs text-slate-500">
+                Source of truth. Edits update the graph live.
+              </div>
+            </div>
+
+            <div
+              className={`rounded-full px-3 py-1 text-xs ${
+                saveState === "error"
+                  ? "bg-red-400/10 text-red-200"
+                  : saveState === "saved"
+                    ? "bg-emerald-400/10 text-emerald-200"
+                    : saveState === "saving"
+                      ? "bg-cyan-400/10 text-cyan-200"
+                      : "bg-slate-800 text-slate-300"
+              }`}
+            >
+              {saveState === "saving" ? "saving" : saveState === "saved" ? "saved" : dirty ? "dirty" : "ready"}
+            </div>
+          </div>
+
+          <div className="relative">
+            <Editor
+              height="100%"
+              language="yaml"
+              theme="vs-dark"
+              value={yaml}
+              onChange={(value) => setYamlDirty(value ?? "")}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 12,
+                wordWrap: "on",
+                scrollBeyondLastLine: false,
+                automaticLayout: true,
+              }}
+            />
+
+            {statusMessage && (
+              <div className="absolute bottom-4 left-4 right-4 rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 text-xs text-slate-300 shadow-2xl backdrop-blur">
+                {statusMessage}
+              </div>
+            )}
+          </div>
+        </section>
+      </aside>
     </div>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string;
+  value: number;
+  tone?: "default" | "ok" | "warn" | "danger";
+}) {
+  const toneClass =
+    tone === "danger"
+      ? "bg-red-400/10 text-red-200"
+      : tone === "warn"
+        ? "bg-amber-400/10 text-amber-200"
+        : tone === "ok"
+          ? "bg-emerald-400/10 text-emerald-200"
+          : "bg-slate-800 text-slate-200";
+
+  return (
+    <div className={`rounded-2xl px-3 py-2 ${toneClass}`}>
+      <div className="text-sm font-black">{value}</div>
+      <div className="text-[10px] uppercase tracking-wider opacity-75">{label}</div>
+    </div>
+  );
+}
+
+function ToolbarButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/10 px-3 py-2 text-sm text-slate-100 shadow-lg backdrop-blur transition hover:bg-white/15"
+    >
+      {children}
+    </button>
+  );
+}
+
+function IssueCard({
+  severity,
+  message,
+  stepId,
+  onClick,
+}: {
+  severity: string;
+  message: string;
+  stepId?: string;
+  onClick: () => void;
+}) {
+  const isError = severity === "error";
+
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full rounded-2xl border p-3 text-left text-xs transition hover:scale-[1.01] ${
+        isError
+          ? "border-red-400/20 bg-red-400/10 text-red-100"
+          : "border-amber-400/20 bg-amber-400/10 text-amber-100"
+      }`}
+    >
+      <div className="mb-1 flex items-center gap-2 font-semibold uppercase tracking-wider">
+        <AlertTriangle size={13} />
+        {severity}
+        {stepId && <span className="ml-auto max-w-24 truncate font-mono normal-case">{stepId}</span>}
+      </div>
+      <div className="leading-5 opacity-90">{message}</div>
+    </button>
   );
 }
