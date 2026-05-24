@@ -143,22 +143,19 @@ async function createEditorSession(id: unknown, args: Record<string, unknown>) {
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  const url = `${appUrl}/editor/session/${sessionId}`;
+  const valid = !parsed.error && issues.filter((i) => i.severity === "error").length === 0;
 
   return jsonrpc(id, {
+    id: sessionId,
+    url,
+    valid,
+    issueCount: issues.length,
+    parseError: parsed.error,
     content: [
       {
         type: "text",
-        text: JSON.stringify(
-          {
-            id: sessionId,
-            url: `${appUrl}/editor/session/${sessionId}`,
-            valid: !parsed.error && issues.filter((i) => i.severity === "error").length === 0,
-            issueCount: issues.length,
-            parseError: parsed.error,
-          },
-          null,
-          2
-        ),
+        text: url,
       },
     ],
     isError: false,
