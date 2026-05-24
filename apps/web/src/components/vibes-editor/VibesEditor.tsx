@@ -86,12 +86,15 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const [rightOpen, setRightOpen] = useState(true);
 
   const dragState = useRef<null | "left" | "right">(null);
+  const yamlEditorRef = useRef<any>(null);
 
   const parsed = useMemo(() => parseVibeYaml(yaml), [yaml]);
+
   const issues = useMemo(
-  () => [...(parsed.rawIssues ?? []), ...(parsed.doc ? validateVibe(parsed.doc) : [])],
-  [parsed.doc, parsed.rawIssues]
-);
+    () => [...(parsed.rawIssues ?? []), ...(parsed.doc ? validateVibe(parsed.doc) : [])],
+    [parsed.doc, parsed.rawIssues]
+  );
+
   const graph = useMemo(
     () => (parsed.doc ? buildVibeGraph(parsed.doc, issues) : { nodes: [], edges: [] }),
     [parsed.doc, issues]
@@ -163,6 +166,32 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     if (saveState === "saved") setSaveState("idle");
   }
 
+  function escapeRegExp(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function findStepLineNumber(stepId?: string) {
+    if (!stepId) return null;
+
+    const lines = yaml.split(/\r?\n/);
+    const pattern = new RegExp(`^\\s*-?\\s*id:\\s*["']?${escapeRegExp(stepId)}["']?\\s*$`);
+
+    const index = lines.findIndex((line) => pattern.test(line));
+
+    return index >= 0 ? index + 1 : null;
+  }
+
+  function jumpToYamlLine(lineNumber?: number | null, column = 1) {
+    if (!lineNumber || !yamlEditorRef.current) return;
+
+    yamlEditorRef.current.revealLineInCenter(lineNumber);
+    yamlEditorRef.current.setPosition({
+      lineNumber,
+      column,
+    });
+    yamlEditorRef.current.focus();
+  }
+
   function focusStep(stepId?: string) {
     if (!stepId) return;
     setSelectedStepId(stepId);
@@ -173,6 +202,22 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
         zoom: 1.05,
         duration: 450,
       });
+    }
+  }
+
+  function jumpToIssue(issue: {
+    lineNumber?: number;
+    column?: number;
+    stepId?: string;
+  }) {
+    if (issue.lineNumber) {
+      jumpToYamlLine(issue.lineNumber, issue.column ?? 1);
+      return;
+    }
+
+    if (issue.stepId) {
+      focusStep(issue.stepId);
+      jumpToYamlLine(findStepLineNumber(issue.stepId), 1);
     }
   }
 
@@ -272,6 +317,8 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     }
   }
 
+  const parseIssue = parsed.rawIssues?.find((issue) => issue.severity === "error");
+
   return (
     <div
       className="grid h-screen overflow-hidden bg-slate-950 text-white"
@@ -326,7 +373,12 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
 
             <div className="mt-3 max-h-[40vh] space-y-2 overflow-auto pr-1">
               {parsed.error && (
-                <IssueCard severity="error" message={parsed.error} onClick={() => undefined} />
+                <IssueCard
+                  severity="error"
+                  message={parsed.error}
+                  lineNumber={parseIssue?.lineNumber}
+                  onClick={() => jumpToIssue(parseIssue ?? {})}
+                />
               )}
 
               {!parsed.error && issues.length === 0 && (
@@ -340,11 +392,12 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
 
               {issues.map((issue, i) => (
                 <IssueCard
-                  key={`${issue.stepId ?? "global"}-${i}`}
+                  key={`${issue.stepId ?? "global"}-${issue.lineNumber ?? "no-line"}-${i}`}
                   severity={issue.severity}
                   message={issue.message}
                   stepId={issue.stepId}
-                  onClick={() => focusStep(issue.stepId)}
+                  lineNumber={issue.lineNumber}
+                  onClick={() => jumpToIssue(issue)}
                 />
               ))}
             </div>
@@ -366,17 +419,13 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
 
         <button
           onMouseDown={() => beginDrag("left")}
-          className={`absolute bottom-0 top-0 z-30 w-2 cursor-col-resize bg-transparent transition hover:bg-cyan-300/30 ${
-            leftOpen ? "left-0" : "left-0"
-          }`}
+          className="absolute bottom-0 left-0 top-0 z-30 w-2 cursor-col-resize bg-transparent transition hover:bg-cyan-300/30"
           aria-label="Resize left panel"
         />
 
         <button
           onMouseDown={() => beginDrag("right")}
-          className={`absolute bottom-0 top-0 z-30 w-2 cursor-col-resize bg-transparent transition hover:bg-cyan-300/30 ${
-            rightOpen ? "right-0" : "right-0"
-          }`}
+          className="absolute bottom-0 right-0 top-0 z-30 w-2 cursor-col-resize bg-transparent transition hover:bg-cyan-300/30"
           aria-label="Resize right panel"
         />
 
@@ -562,6 +611,9 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
               language="yaml"
               theme="vs-dark"
               value={yaml}
+              onMount={(editor) => {
+                yamlEditorRef.current = editor;
+              }}
               onChange={(value) => setYamlDirty(value ?? "")}
               options={{
                 minimap: { enabled: false },
@@ -625,11 +677,13 @@ function IssueCard({
   severity,
   message,
   stepId,
+  lineNumber,
   onClick,
 }: {
   severity: string;
   message: string;
   stepId?: string;
+  lineNumber?: number;
   onClick: () => void;
 }) {
   const isError = severity === "error";
@@ -646,7 +700,9 @@ function IssueCard({
       <div className="mb-1 flex items-center gap-2 font-semibold uppercase tracking-wider">
         <AlertTriangle size={13} />
         {severity}
-        {stepId && <span className="ml-auto max-w-24 truncate font-mono normal-case">{stepId}</span>}
+        <span className="ml-auto max-w-32 truncate font-mono normal-case">
+          {lineNumber ? `line ${lineNumber}` : stepId}
+        </span>
       </div>
       <div className="leading-5 opacity-90">{message}</div>
     </button>

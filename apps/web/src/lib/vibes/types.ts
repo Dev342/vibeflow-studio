@@ -17,6 +17,8 @@ export type VibeIssue = {
   severity: "error" | "warning" | "info";
   stepId?: string;
   message: string;
+  lineNumber?: number;
+  column?: number;
 };
 
 export type VibeGraphNodeData = {
