@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -21,6 +21,10 @@ import {
   FileCode2,
   Loader2,
   Maximize2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   RefreshCcw,
   Save,
   Sparkles,
@@ -76,6 +80,13 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const [dirty, setDirty] = useState(false);
   const [flowInstance, setFlowInstance] = useState<any>(null);
 
+  const [leftWidth, setLeftWidth] = useState(360);
+  const [rightWidth, setRightWidth] = useState(520);
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
+
+  const dragState = useRef<null | "left" | "right">(null);
+
   const parsed = useMemo(() => parseVibeYaml(yaml), [yaml]);
   const issues = useMemo(() => (parsed.doc ? validateVibe(parsed.doc) : []), [parsed.doc]);
   const graph = useMemo(
@@ -91,6 +102,36 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     setEdges(graph.edges as any[]);
   }, [graph, setEdges, setNodes]);
 
+  useEffect(() => {
+    function onMouseMove(event: MouseEvent) {
+      if (!dragState.current) return;
+
+      if (dragState.current === "left") {
+        const next = Math.min(Math.max(event.clientX, 280), 520);
+        setLeftWidth(next);
+      }
+
+      if (dragState.current === "right") {
+        const next = Math.min(Math.max(window.innerWidth - event.clientX, 420), 760);
+        setRightWidth(next);
+      }
+    }
+
+    function onMouseUp() {
+      dragState.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
   const selectedStep = parsed.doc?.workflow.steps.find((s) => s.id === selectedStepId);
 
   const selectedStepYaml = useMemo(() => {
@@ -102,6 +143,16 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const warningCount = issues.filter((issue) => issue.severity === "warning").length;
   const workflowName = parsed.doc?.workflow.name ?? sessionTitle ?? "Invalid YAML";
   const stepCount = parsed.doc?.workflow.steps.length ?? 0;
+
+  const gridTemplateColumns = `${leftOpen ? `${leftWidth}px` : "0px"} 1fr ${
+    rightOpen ? `${rightWidth}px` : "0px"
+  }`;
+
+  function beginDrag(which: "left" | "right") {
+    dragState.current = which;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }
 
   function setYamlDirty(nextYaml: string) {
     setYaml(nextYaml);
@@ -219,11 +270,18 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   }
 
   return (
-    <div className="grid h-screen grid-cols-[310px_1fr_470px] overflow-hidden bg-slate-950 text-white">
-      <aside className="relative border-r border-white/10 bg-slate-950">
+    <div
+      className="grid h-screen overflow-hidden bg-slate-950 text-white"
+      style={{ gridTemplateColumns }}
+    >
+      <aside
+        className={`relative overflow-hidden border-r border-white/10 bg-slate-950 transition-opacity ${
+          leftOpen ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      >
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.12),transparent_35%)]" />
 
-        <div className="relative flex h-full flex-col p-4">
+        <div className="relative flex h-full flex-col gap-4 overflow-y-auto p-4">
           <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-4 shadow-2xl backdrop-blur">
             <div className="flex items-center gap-3">
               <div className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-2">
@@ -247,7 +305,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
             </div>
           </div>
 
-          <div className="mt-4 rounded-3xl border border-white/10 bg-white/[0.05] p-4 shadow-xl backdrop-blur">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.05] p-4 shadow-xl backdrop-blur">
             <div className="flex items-center justify-between">
               <div className="text-sm font-bold">Validation</div>
               <div
@@ -263,13 +321,9 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
               </div>
             </div>
 
-            <div className="mt-3 max-h-[42vh] space-y-2 overflow-auto pr-1">
+            <div className="mt-3 max-h-[40vh] space-y-2 overflow-auto pr-1">
               {parsed.error && (
-                <IssueCard
-                  severity="error"
-                  message={parsed.error}
-                  onClick={() => undefined}
-                />
+                <IssueCard severity="error" message={parsed.error} onClick={() => undefined} />
               )}
 
               {!parsed.error && issues.length === 0 && (
@@ -296,57 +350,92 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
           <div className="mt-auto rounded-3xl border border-white/10 bg-white/[0.05] p-4 text-xs text-slate-400">
             <div className="font-semibold text-slate-200">Demo hint</div>
             <div className="mt-2 leading-5">
-              Break a branch target or set <span className="font-mono text-slate-200">temperature: 20</span>{" "}
-              to show live validation.
+              Break a branch target or set{" "}
+              <span className="font-mono text-slate-200">temperature: 20</span> to show live
+              validation.
             </div>
           </div>
         </div>
       </aside>
 
-      <main className="relative overflow-hidden">
+      <main className="relative min-w-0 overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(14,165,233,0.16),transparent_25%),radial-gradient(circle_at_70%_80%,rgba(168,85,247,0.13),transparent_30%)]" />
 
-        <div className="absolute left-4 right-4 top-4 z-10 flex items-center justify-between rounded-3xl border border-white/10 bg-slate-950/75 px-4 py-3 shadow-2xl backdrop-blur-xl">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <FileCode2 size={16} />
-              {sessionId ? `Session ${sessionId}` : "Local demo session"}
+        <button
+          onMouseDown={() => beginDrag("left")}
+          className={`absolute bottom-0 top-0 z-30 w-2 cursor-col-resize bg-transparent transition hover:bg-cyan-300/30 ${
+            leftOpen ? "left-0" : "left-0"
+          }`}
+          aria-label="Resize left panel"
+        />
+
+        <button
+          onMouseDown={() => beginDrag("right")}
+          className={`absolute bottom-0 top-0 z-30 w-2 cursor-col-resize bg-transparent transition hover:bg-cyan-300/30 ${
+            rightOpen ? "right-0" : "right-0"
+          }`}
+          aria-label="Resize right panel"
+        />
+
+        <div className="absolute left-4 right-4 top-4 z-20 rounded-3xl border border-white/10 bg-slate-950/80 p-3 shadow-2xl backdrop-blur-xl">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <FileCode2 size={16} />
+                <span className="truncate">
+                  {sessionId ? `Session ${sessionId}` : "Local demo session"}
+                </span>
+              </div>
+              <div className="mt-0.5 text-xs text-slate-400">
+                {dirty ? "Unsaved changes" : "All changes saved"} · {stepCount} visual node
+                {stepCount === 1 ? "" : "s"}
+              </div>
             </div>
-            <div className="mt-0.5 text-xs text-slate-400">
-              {dirty ? "Unsaved changes" : "All changes saved"} · {stepCount} visual node
-              {stepCount === 1 ? "" : "s"}
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <ToolbarButton onClick={() => setLeftOpen((value) => !value)}>
+                {leftOpen ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
+                Left
+              </ToolbarButton>
+
+              <ToolbarButton onClick={() => setRightOpen((value) => !value)}>
+                {rightOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
+                Right
+              </ToolbarButton>
+
+              <ToolbarButton onClick={() => flowInstance?.fitView({ duration: 450 })}>
+                <Maximize2 size={15} />
+                Fit
+              </ToolbarButton>
+
+              <ToolbarButton onClick={() => setYamlDirty(initialYaml)}>
+                <RefreshCcw size={15} />
+                Reset
+              </ToolbarButton>
+
+              <ToolbarButton onClick={copyYaml}>
+                <Clipboard size={15} />
+                Copy
+              </ToolbarButton>
+
+              <ToolbarButton onClick={downloadYaml}>
+                <Download size={15} />
+                Download
+              </ToolbarButton>
+
+              <button
+                onClick={saveSession}
+                disabled={saveState === "saving" || !sessionId || !dirty}
+                className="inline-flex items-center gap-2 rounded-2xl bg-cyan-300 px-4 py-2 text-sm font-bold text-slate-950 shadow-xl transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {saveState === "saving" ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Save size={15} />
+                )}
+                Save
+              </button>
             </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <ToolbarButton onClick={() => flowInstance?.fitView({ duration: 450 })}>
-              <Maximize2 size={15} />
-              Fit
-            </ToolbarButton>
-
-            <ToolbarButton onClick={() => setYamlDirty(initialYaml)}>
-              <RefreshCcw size={15} />
-              Reset
-            </ToolbarButton>
-
-            <ToolbarButton onClick={copyYaml}>
-              <Clipboard size={15} />
-              Copy
-            </ToolbarButton>
-
-            <ToolbarButton onClick={downloadYaml}>
-              <Download size={15} />
-              Download
-            </ToolbarButton>
-
-            <button
-              onClick={saveSession}
-              disabled={saveState === "saving" || !sessionId || !dirty}
-              className="inline-flex items-center gap-2 rounded-2xl bg-cyan-300 px-4 py-2 text-sm font-bold text-slate-950 shadow-xl transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {saveState === "saving" ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
-              Save
-            </button>
           </div>
         </div>
 
@@ -363,9 +452,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
           className="relative z-0"
         >
           <Background color="#334155" gap={24} size={1} />
-          <Controls
-            className="!bottom-5 !left-5 !rounded-2xl !border !border-white/10 !bg-slate-950/80 !p-1 !shadow-xl !backdrop-blur"
-          />
+          <Controls className="!bottom-5 !left-5 !rounded-2xl !border !border-white/10 !bg-slate-950/80 !p-1 !shadow-xl !backdrop-blur" />
           <MiniMap
             className="!bottom-5 !right-5 !rounded-3xl !border !border-white/10 !bg-slate-950/80 !shadow-2xl"
             maskColor="rgba(2, 6, 23, 0.68)"
@@ -377,9 +464,13 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
         </ReactFlow>
       </main>
 
-      <aside className="grid grid-rows-[340px_1fr] border-l border-white/10 bg-slate-950">
+      <aside
+        className={`grid grid-rows-[340px_1fr] overflow-hidden border-l border-white/10 bg-slate-950 transition-opacity ${
+          rightOpen ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      >
         <section className="border-b border-white/10 bg-slate-950 p-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-black">Inspector</div>
               <div className="mt-1 text-xs text-slate-500">
@@ -425,6 +516,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
                   lineNumbers: "off",
                   folding: false,
                   scrollBeyondLastLine: false,
+                  automaticLayout: true,
                 }}
               />
             </div>
@@ -451,7 +543,13 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
                       : "bg-slate-800 text-slate-300"
               }`}
             >
-              {saveState === "saving" ? "saving" : saveState === "saved" ? "saved" : dirty ? "dirty" : "ready"}
+              {saveState === "saving"
+                ? "saving"
+                : saveState === "saved"
+                  ? "saved"
+                  : dirty
+                    ? "dirty"
+                    : "ready"}
             </div>
           </div>
 
