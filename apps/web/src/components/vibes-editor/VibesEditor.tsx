@@ -93,6 +93,7 @@ export function VibesEditor({ initialYaml, sessionId, sessionTitle }: Props) {
 function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const [yaml, setYaml] = useState(initialYaml);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+  const [hoveredStepId, setHoveredStepId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [statusMessage, setStatusMessage] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -148,6 +149,98 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState([] as any[]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as any[]);
 
+  const activeStepId = hoveredStepId ?? selectedStepId;
+
+  const connectedStepIds = useMemo(() => {
+    const ids = new Set<string>();
+
+    if (!activeStepId) return ids;
+
+    ids.add(activeStepId);
+
+    edges.forEach((edge: any) => {
+      if (edge.source === activeStepId || edge.target === activeStepId) {
+        ids.add(edge.source);
+        ids.add(edge.target);
+      }
+    });
+
+    return ids;
+  }, [activeStepId, edges]);
+
+  const displayNodes = useMemo(() => {
+    if (!activeStepId) return nodes;
+
+    return nodes.map((node: any) => {
+      const isConnected = connectedStepIds.has(node.id);
+      const isActive = node.id === activeStepId;
+
+      return {
+        ...node,
+        style: {
+          ...node.style,
+          opacity: isConnected ? 1 : 0.28,
+          transition: "opacity 160ms ease, filter 160ms ease, transform 160ms ease",
+          filter: isActive
+            ? "drop-shadow(0 0 22px rgba(34, 211, 238, 0.48))"
+            : isConnected
+              ? "drop-shadow(0 0 12px rgba(34, 211, 238, 0.22))"
+              : undefined,
+        },
+      };
+    });
+  }, [activeStepId, connectedStepIds, nodes]);
+
+  const displayEdges = useMemo(() => {
+    if (!activeStepId) {
+      return edges.map((edge: any) => ({
+        ...edge,
+        labelStyle: {
+          fill: "#cbd5e1",
+          fontWeight: 800,
+          fontSize: 12,
+        },
+        labelBgStyle: {
+          fill: "rgba(15, 23, 42, 0.94)",
+          stroke: "rgba(148, 163, 184, 0.28)",
+        },
+        labelBgPadding: [9, 6],
+        labelBgBorderRadius: 12,
+        style: {
+          ...edge.style,
+          stroke: "rgba(148, 163, 184, 0.58)",
+          strokeWidth: 2.2,
+        },
+      }));
+    }
+
+    return edges.map((edge: any) => {
+      const isConnected = edge.source === activeStepId || edge.target === activeStepId;
+
+      return {
+        ...edge,
+        animated: isConnected || edge.animated,
+        labelStyle: {
+          fill: isConnected ? "#67e8f9" : "#94a3b8",
+          fontWeight: isConnected ? 950 : 700,
+          fontSize: isConnected ? 13 : 11,
+        },
+        labelBgStyle: {
+          fill: isConnected ? "rgba(8, 47, 73, 0.96)" : "rgba(15, 23, 42, 0.82)",
+          stroke: isConnected ? "rgba(103, 232, 249, 0.72)" : "rgba(148, 163, 184, 0.16)",
+        },
+        labelBgPadding: [10, 6],
+        labelBgBorderRadius: 12,
+        style: {
+          ...edge.style,
+          stroke: isConnected ? "#22d3ee" : "rgba(100, 116, 139, 0.24)",
+          strokeWidth: isConnected ? 4 : 1.4,
+          filter: isConnected ? "drop-shadow(0 0 12px rgba(34, 211, 238, 0.56))" : undefined,
+        },
+      };
+    });
+  }, [activeStepId, edges]);
+
   useEffect(() => {
     setNodes(graph.nodes as any[]);
     setEdges(graph.edges as any[]);
@@ -200,8 +293,7 @@ function VibesEditorInner({ initialYaml, sessionId, sessionTitle }: Props) {
     typeof selectedInput.server_url === "string" && selectedInput.server_url.startsWith("http")
       ? selectedInput.server_url
       : null;
-  const mcpToolName =
-    typeof selectedInput.tool_name === "string" ? selectedInput.tool_name : null;
+  const mcpToolName = typeof selectedInput.tool_name === "string" ? selectedInput.tool_name : null;
 
   const errorCount = displayedIssues.filter((issue) => issue.severity === "error").length;
   const warningCount = displayedIssues.filter((issue) => issue.severity === "warning").length;
@@ -504,6 +596,18 @@ Do not change the YAML unless I explicitly ask.`
           fill: #e2e8f0 !important;
           color: #e2e8f0 !important;
         }
+
+        .react-flow__edge-path {
+          transition: stroke 160ms ease, stroke-width 160ms ease, filter 160ms ease;
+        }
+
+        .react-flow__node {
+          transition: opacity 160ms ease, filter 160ms ease;
+        }
+
+        .react-flow__edge-textbg {
+          paint-order: stroke;
+        }
       `}</style>
 
       <aside
@@ -685,18 +789,31 @@ Do not change the YAML unless I explicitly ask.`
         </div>
 
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          nodes={displayNodes}
+          edges={displayEdges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           nodeTypes={nodeTypes}
           fitView
+          fitViewOptions={{
+            padding: 0.28,
+            duration: 500,
+          }}
+          minZoom={0.25}
+          maxZoom={1.4}
+          defaultViewport={{
+            x: 40,
+            y: 80,
+            zoom: 0.85,
+          }}
           onInit={setFlowInstance}
           onNodeClick={(_, node: any) => jumpToStep(node.id)}
+          onNodeMouseEnter={(_, node: any) => setHoveredStepId(node.id)}
+          onNodeMouseLeave={() => setHoveredStepId(null)}
           proOptions={{ hideAttribution: true }}
           className="relative z-0"
         >
-          <Background color="#334155" gap={24} size={1} />
+          <Background color="#334155" gap={28} size={1} />
           <Controls className="!bottom-5 !left-5 !rounded-2xl !border !border-white/10 !bg-slate-950/80 !p-1 !shadow-xl !backdrop-blur" />
           <MiniMap
             className="!bottom-5 !right-5 !rounded-3xl !border !border-white/10 !bg-slate-950/80 !shadow-2xl"
